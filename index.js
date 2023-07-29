@@ -3,6 +3,7 @@ const app = express();
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config()
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000;
 
 // middleware
@@ -48,7 +49,7 @@ async function run() {
     const menuCollection = client.db("bistroBossDB").collection("menu");
     const reviewCollection = client.db("bistroBossDB").collection("reviews");
     const cartCollection = client.db("bistroBossDB").collection("carts");
-
+    const paymentCollection = client.db("bistroBossDB").collection("payments");
     app.post('/jwt', (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.ACCESS_TOKEN, { expiresIn: '1h' })
@@ -142,6 +143,12 @@ async function run() {
       const result = await menuCollection.deleteOne(query);
       res.send(result);
     })
+    app.delete('/user/:id', verifyJWT, verifyJWT, async(req,res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await usersCollection.deleteOne(query);
+      res.send(result);
+    })
 
     // review related apis
     app.get('/reviews', async (req, res) => {
@@ -160,7 +167,7 @@ async function run() {
 
       const decodedEmail = req.decoded.email;
       if (email !== decodedEmail) {
-        return res.status(403).send({ error: true, message: 'Forbidden access' })
+        return res.status(403).send({ error: true, message: 'forbidden access' })
       }
 
       const query = { email: email };
@@ -180,6 +187,54 @@ async function run() {
       const result = await cartCollection.deleteOne(query);
       res.send(result);
     })
+
+    // create payment intent
+    app.post('/create-payment-intent', verifyJWT, async(req, res) => {
+        const {price} = req.body;
+        const amount = price*100;      
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount,
+          currency: 'usd',
+          payment_method_types: ['card']
+        });
+
+        res.send({
+          clientSecret: paymentIntent.client_secret
+        })
+    })
+
+
+    // payment related Api
+    app.post('/payments', verifyJWT, async(req, res) =>{
+       const payment = req.body;
+       const insertResult = await paymentCollection.insertOne(payment);
+       
+       const query = {_id: { $in: payment.cartItems.map(id => new ObjectId(id))}}
+       const deleteResult = await cartCollection.deleteMany(query)
+       
+       res.send({ insertResult, deleteResult});
+    })
+
+
+    app.get('/admin-stats', verifyJWT, verifyAdmin, async(req, res) =>{
+      const users = await usersCollection.estimatedDocumentCount()
+      const products = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      //best way to get sum
+
+       const payments = await paymentCollection.find().toArray();
+       const revenue = payments.reduce( ( sum, payment) => sum + payment.price, 0)
+
+      res.send({
+        revenue,
+        users,
+        products,
+        orders
+
+      })
+    })
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
